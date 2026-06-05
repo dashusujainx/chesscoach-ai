@@ -1,0 +1,13 @@
+services:
+  backend:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - GROQ_API_KEY=${GROQ_API_KEY}
+      - QDRANT_URL=${QDRANT_URL}
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - CHESSCOM_USERNAME=${CHESSCOM_USERNAME}
+    volumes:
+      # Mount data folder so CSV is always fresh
+      - ./data:/app/data
