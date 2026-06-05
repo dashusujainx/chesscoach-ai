@@ -135,6 +135,11 @@ if __name__ == "__main__":
     # Preview first 2 chunks so you can see what they look like
     print("\n── Sample chunk (opening) ──")
     print(chunks[0]["text"])
-    print("\n── Sample chunk (endgame) ──")
-    print(chunks[2]["text"])
+    # Find the first actual endgame chunk to preview
+    endgame_chunks = [c for c in chunks if c["phase"] == "endgame"]
+    if endgame_chunks:
+        print("\n── Sample chunk (endgame) ──")
+        print(endgame_chunks[0]["text"])
+    else:
+        print("\nNo endgame chunks found (short games only?)")
     print(f"\nTotal chunks ready for embedding: {len(chunks)}")
