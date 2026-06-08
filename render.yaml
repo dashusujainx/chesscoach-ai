@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: chesscoach-ai-backend
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: free
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: QDRANT_URL
+        sync: false
+      - key: QDRANT_API_KEY
+        sync: false
+      - key: CHESSCOM_USERNAME
+        value: dasharatha19
