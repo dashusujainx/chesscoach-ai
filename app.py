@@ -110,7 +110,9 @@ async def setup_username(username: str, background_tasks: BackgroundTasks):
         finally:
             setup_in_progress.discard(username)
 
-    background_tasks.add_task(run_setup)
+    import threading
+    thread = threading.Thread(target=run_setup, daemon=False)
+    thread.start()
     return {"status": "started", "username": username}
 
 
