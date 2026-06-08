@@ -44,7 +44,12 @@ def create_collection(client: QdrantClient, username: str):
     existing        = [c.name for c in client.get_collections().collections]
 
     if collection_name in existing:
-        print(f"Collection '{collection_name}' exists — recreating")
+        # Check if it already has vectors — don't wipe good data!
+        count = client.count(collection_name=collection_name).count
+        if count > 0:
+            print(f"Collection '{collection_name}' already has {count} vectors — skipping")
+            return
+        print(f"Collection '{collection_name}' exists but empty — recreating")
         client.delete_collection(collection_name)
 
     client.create_collection(
