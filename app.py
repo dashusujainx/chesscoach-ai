@@ -15,7 +15,7 @@ app = FastAPI(title="ChessCoach AI", version="1.0.0")
 # Allow Next.js (port 3000) to call this API
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],
+    allow_origins=["http://localhost:3000", "https://*.vercel.app"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
