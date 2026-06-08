@@ -11,5 +11,3 @@ services:
         sync: false
       - key: QDRANT_API_KEY
         sync: false
-      - key: CHESSCOM_USERNAME
-        value: dasharatha19
