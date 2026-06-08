@@ -1,51 +1,29 @@
 # src/embedder.py
-#
-# WHAT THIS FILE DOES:
-# Takes our 755 text chunks and:
-# 1. Converts each chunk into a vector (list of numbers)
-#    using fastembed — a free local embedding model
-# 2. Stores all vectors in Qdrant — our vector database
-#
-# WHY VECTORS?
-# Computers can't search text by meaning — only exact words.
-# Vectors solve this. "I lost the endgame" and "checkmate in
-# the final phase" will have SIMILAR vectors even though the
-# words are different. That's semantic search.
-#
-# EXAMPLE:
-# "Why do I blunder in endgames?" 
-# → converts to a vector
-# → finds the 5 most similar endgame chunk vectors
-# → returns those chunks to the LLM as context
 
 from qdrant_client import QdrantClient
-from qdrant_client.models import (
-    Distance, VectorParams, PointStruct
-)
+from qdrant_client.models import Distance, VectorParams, PointStruct
 from fastembed import TextEmbedding
-import pandas as pd
 import os
 import uuid
 from pathlib import Path
 from dotenv import load_dotenv
 
-# import our chunker from Phase 2
 import sys
 sys.path.append(str(Path(__file__).parent))
 from chunker import chunk_all_games
 
 load_dotenv()
 
-USERNAME  = os.getenv("CHESSCOM_USERNAME")
-PROCESSED = Path("data/processed")
-
-# ── Config ─────────────────────────────────────────────────────────────
-COLLECTION_NAME = "chess_games"   # name of our Qdrant collection
-EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"  # free, fast, good quality
-# This model produces 384-dimensional vectors
+EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
+PROCESSED       = Path("data/processed")
 
 
-def get_qdrant_client():
+def get_collection_name(username: str) -> str:
+    """Each user gets their own Qdrant collection."""
+    return f"chess_{username.lower()}"
+
+
+def get_qdrant_client() -> QdrantClient:
     return QdrantClient(
         url=os.getenv("QDRANT_URL"),
         api_key=os.getenv("QDRANT_API_KEY")
@@ -53,63 +31,41 @@ def get_qdrant_client():
 
 
 def get_embedding_model() -> TextEmbedding:
-    """
-    Loads the embedding model.
-    First run downloads ~130MB — subsequent runs use the cache.
-    """
-    print(f"Loading embedding model: {EMBEDDING_MODEL}")
-    print("(First run downloads ~130MB — wait for it...)")
     return TextEmbedding(EMBEDDING_MODEL)
 
 
-def create_collection(client: QdrantClient):
-    """
-    Creates the Qdrant collection if it doesn't exist.
-    A collection is like a table in a database — but for vectors.
-    
-    size=384 must match the embedding model's output dimensions.
-    Distance.COSINE measures similarity between vectors (0=different, 1=identical).
-    """
+def collection_exists(client: QdrantClient, username: str) -> bool:
     existing = [c.name for c in client.get_collections().collections]
+    return get_collection_name(username) in existing
 
-    if COLLECTION_NAME in existing:
-        print(f"Collection '{COLLECTION_NAME}' already exists — deleting and recreating")
-        client.delete_collection(COLLECTION_NAME)
+
+def create_collection(client: QdrantClient, username: str):
+    collection_name = get_collection_name(username)
+    existing        = [c.name for c in client.get_collections().collections]
+
+    if collection_name in existing:
+        print(f"Collection '{collection_name}' exists — recreating")
+        client.delete_collection(collection_name)
 
     client.create_collection(
-        collection_name=COLLECTION_NAME,
-        vectors_config=VectorParams(
-            size=384,              # must match BAAI/bge-small-en-v1.5 output
-            distance=Distance.COSINE
-        )
+        collection_name=collection_name,
+        vectors_config=VectorParams(size=384, distance=Distance.COSINE)
     )
-    print(f"Created collection: {COLLECTION_NAME}")
+    print(f"Created collection: {collection_name}")
 
 
-def embed_and_store(chunks: list[dict], client: QdrantClient, model: TextEmbedding):
-    """
-    The core function — embeds all chunks and stores them in Qdrant.
-    
-    Each stored point has:
-    - id:      unique identifier
-    - vector:  the embedding (384 numbers)
-    - payload: the original text + metadata (phase, result, opening, etc.)
-    """
-    print(f"\nEmbedding {len(chunks)} chunks...")
-    print("This may take 1-2 minutes on first run...")
+def embed_and_store(chunks: list[dict], client: QdrantClient,
+                    model: TextEmbedding, username: str):
+    collection_name = get_collection_name(username)
+    print(f"Embedding {len(chunks)} chunks...")
 
-    # Extract just the text from each chunk for embedding
-    texts = [chunk["text"] for chunk in chunks]
-
-    # Generate embeddings for all texts at once (batched = faster)
+    texts      = [chunk["text"] for chunk in chunks]
     embeddings = list(model.embed(texts))
-    print(f"Generated {len(embeddings)} embeddings")
 
-    # Build Qdrant points — each point = vector + metadata
     points = []
-    for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
-        point = PointStruct(
-            id=str(uuid.uuid4()),   # unique ID for each chunk
+    for chunk, embedding in zip(chunks, embeddings):
+        points.append(PointStruct(
+            id=str(uuid.uuid4()),
             vector=embedding.tolist(),
             payload={
                 "text":         chunk["text"],
@@ -124,81 +80,68 @@ def embed_and_store(chunks: list[dict], client: QdrantClient, model: TextEmbeddi
                 "total_moves":  chunk["total_moves"],
                 "time_control": chunk["time_control"],
             }
-        )
-        points.append(point)
+        ))
 
-    # Upload all points to Qdrant in batches of 100
     batch_size = 100
     for i in range(0, len(points), batch_size):
         batch = points[i:i + batch_size]
-        client.upsert(
-            collection_name=COLLECTION_NAME,
-            points=batch
-        )
+        client.upsert(collection_name=collection_name, points=batch)
         print(f"  Stored {min(i + batch_size, len(points))}/{len(points)} chunks...")
 
-    print(f"\nAll {len(points)} chunks stored in Qdrant!")
+    print(f"All {len(points)} chunks stored for {username}!")
 
 
-def verify_storage(client: QdrantClient):
+def setup_user(username: str) -> dict:
     """
-    Confirms everything was stored correctly.
-    Also does a test search to make sure retrieval works.
+    Full pipeline for a new user:
+    fetch → parse → chunk → embed
+    Returns stats dict.
     """
-    count = client.count(collection_name=COLLECTION_NAME).count
-    print(f"\nVerification: {count} vectors in Qdrant")
+    from fetch_games import fetch_all_games, save_games
+    from parse_pgn import parse_pgn_file
 
-    # Test search — find chunks related to losing
-    print("\nTest search: 'games where I lost in the endgame'")
-    model     = TextEmbedding(EMBEDDING_MODEL)
-    query_vec = list(model.embed(["games where I lost in the endgame"]))[0]
+    # Step 1: Fetch games
+    print(f"\n[1/4] Fetching games for {username}...")
+    pgn_text = fetch_all_games(username, last_n_months=6)
+    if not pgn_text or pgn_text.count("[Event ") == 0:
+        raise ValueError(f"No games found for '{username}' on Chess.com")
 
-    results = client.query_points(
-        collection_name=COLLECTION_NAME,
-        query=query_vec.tolist(),
-        limit=3
-    ).points
+    pgn_path = save_games(pgn_text, username)
+    total_games = pgn_text.count("[Event ")
+    print(f"Downloaded {total_games} games")
 
-    print(f"Top 3 most relevant chunks found:")
-    for i, r in enumerate(results):
-        print(f"\n  Result {i+1} (score: {r.score:.3f})")
-        print(f"  Phase:   {r.payload['phase']}")
-        print(f"  Result:  {r.payload['result']}")
-        print(f"  Opening: {r.payload['opening']}")
-        print(f"  Date:    {r.payload['date']}")
+    # Step 2: Parse PGN → CSV
+    print(f"\n[2/4] Parsing games...")
+    df       = parse_pgn_file(pgn_path, username)
+    csv_path = PROCESSED / f"{username}_games.csv"
+    PROCESSED.mkdir(parents=True, exist_ok=True)
+    df.to_csv(csv_path, index=False)
+    print(f"Parsed {len(df)} games")
+
+    # Step 3: Chunk
+    print(f"\n[3/4] Chunking games...")
+    chunks = chunk_all_games(csv_path)
+
+    # Step 4: Embed + store
+    print(f"\n[4/4] Embedding and storing in Qdrant...")
+    client = get_qdrant_client()
+    model  = get_embedding_model()
+    create_collection(client, username)
+    embed_and_store(chunks, client, model, username)
+
+    return {
+        "username":    username,
+        "total_games": len(df),
+        "total_chunks": len(chunks),
+        "collection":  get_collection_name(username)
+    }
 
 
 # ── Run directly ───────────────────────────────────────────────────────
 if __name__ == "__main__":
-    csv_path = PROCESSED / f"{USERNAME}_games.csv"
-
-    if not csv_path.exists():
-        print(f"ERROR: {csv_path} not found. Run parse_pgn.py first.")
-        exit(1)
-
-    # Step 1: Load chunks from Phase 2
-    print("Step 1: Loading chunks...")
-    chunks = chunk_all_games(csv_path)
-
-    # Step 2: Connect to Qdrant (local, no server needed)
-    print("\nStep 2: Connecting to Qdrant...")
-    client = get_qdrant_client()
-
-    # Step 3: Create the collection
-    print("\nStep 3: Creating collection...")
-    create_collection(client)
-
-    # Step 4: Load embedding model
-    print("\nStep 4: Loading embedding model...")
-    model = get_embedding_model()
-
-    # Step 5: Embed everything and store in Qdrant
-    print("\nStep 5: Embedding and storing...")
-    embed_and_store(chunks, client, model)
-
-    # Step 6: Verify it all worked
-    print("\nStep 6: Verifying storage...")
-    verify_storage(client)
-
-    print("\n✅ Phase 3 complete! Your chess games are now searchable by meaning.")
-    print("   Next step: retriever.py + Groq LLM = ask questions about your games!")
+    from dotenv import load_dotenv
+    load_dotenv()
+    import os
+    username = os.getenv("CHESSCOM_USERNAME")
+    result   = setup_user(username)
+    print(f"\n✅ Setup complete: {result}")

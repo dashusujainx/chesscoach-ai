@@ -1,12 +1,4 @@
 # src/retriever.py
-#
-# THIS IS THE PAYOFF FILE.
-# You ask a question in plain English.
-# It searches your 755 game vectors for relevant context.
-# It sends that context to Groq LLM.
-# You get a personalized, specific answer about YOUR chess.
-#
-# This is the complete RAG pipeline in one file.
 
 from qdrant_client import QdrantClient
 from fastembed import TextEmbedding
@@ -18,25 +10,32 @@ import pandas as pd
 
 load_dotenv()
 
-
 ROUTE_AGGREGATE = "aggregate"
 ROUTE_SPECIFIC  = "specific"
 ROUTE_HYBRID    = "hybrid"
 
 GROQ_API_KEY    = os.getenv("GROQ_API_KEY")
-USERNAME        = os.getenv("CHESSCOM_USERNAME")
-COLLECTION_NAME = "chess_games"
 EMBEDDING_MODEL = "BAAI/bge-small-en-v1.5"
-PROCESSED = Path("data/processed")
+PROCESSED       = Path("data/processed")
 
 
-def get_aggregate_stats() -> str:
-    """
-    For aggregate questions, read directly from CSV.
-    This is more accurate than retrieving chunks.
-    """
-    csv_path = PROCESSED / f"{USERNAME}_games.csv"
-    df = pd.read_csv(csv_path)
+def get_collection_name(username: str) -> str:
+    return f"chess_{username.lower()}"
+
+
+def get_clients():
+    qdrant = QdrantClient(
+        url=os.getenv("QDRANT_URL"),
+        api_key=os.getenv("QDRANT_API_KEY")
+    )
+    embed = TextEmbedding(EMBEDDING_MODEL)
+    groq  = Groq(api_key=GROQ_API_KEY)
+    return qdrant, embed, groq
+
+
+def get_aggregate_stats(username: str) -> str:
+    csv_path = PROCESSED / f"{username}_games.csv"
+    df       = pd.read_csv(csv_path)
 
     total  = len(df)
     wins   = len(df[df["result"] == "win"])
@@ -53,7 +52,9 @@ def get_aggregate_stats() -> str:
         wins=("result", lambda x: (x == "win").sum())
     ).sort_values("games", ascending=False).head(8)
 
-    top_openings["win_rate"] = (top_openings["wins"] / top_openings["games"] * 100).round(1)
+    top_openings["win_rate"] = (
+        top_openings["wins"] / top_openings["games"] * 100
+    ).round(1)
 
     openings_text = "\n".join([
         f"  {row.Index[:40]}: {row.games} games, {row.win_rate}% wins"
@@ -72,69 +73,36 @@ Top openings by games played:
 {openings_text}"""
 
 
-def get_clients():
-    qdrant = QdrantClient(
-        url=os.getenv("QDRANT_URL"),
-        api_key=os.getenv("QDRANT_API_KEY")
-    )
-    embed  = TextEmbedding(EMBEDDING_MODEL)
-    groq   = Groq(api_key=GROQ_API_KEY)
-    return qdrant, embed, groq
-
-
 def retrieve_relevant_chunks(
     question: str,
+    username: str,
     qdrant: QdrantClient,
     embed_model: TextEmbedding,
     limit: int = 8
 ) -> list[dict]:
-    """
-    Step 1 of RAG: Retrieve
-    
-    Converts the question to a vector and finds the
-    most semantically similar chunks from your game history.
-    
-    limit=8 means we fetch the 8 most relevant game moments.
-    More context = better answer, but too much = LLM gets confused.
-    8 is a good balance.
-    """
-    # Convert question to vector
     query_vector = list(embed_model.embed([question]))[0]
+    collection   = get_collection_name(username)
 
-    # Search Qdrant for most similar chunks
     results = qdrant.query_points(
-        collection_name=COLLECTION_NAME,
+        collection_name=collection,
         query=query_vector.tolist(),
         limit=limit
     ).points
 
-    # Extract payload from each result
     return [r.payload for r in results]
 
 
 def build_context(chunks: list[dict]) -> str:
-    """
-    Formats retrieved chunks into a readable context block
-    that the LLM can understand and reason about.
-    """
     context_parts = []
-
     for i, chunk in enumerate(chunks, 1):
-        context_parts.append(f"""
-Game {i}:
-{chunk['text']}
----""")
-
+        context_parts.append(f"\nGame {i}:\n{chunk['text']}\n---")
     return "\n".join(context_parts)
 
-def ask_groq(
-    question: str,
-    context: str,
-    groq_client: Groq
-) -> str:
+
+def ask_groq(question: str, context: str, groq_client: Groq, username: str) -> str:
     system_prompt = f"""You are ChessCoach AI — a personalized chess improvement assistant.
 
-You have been given real game data from {USERNAME}'s chess history on Chess.com.
+You have been given real game data from {username}'s chess history on Chess.com.
 Each game shows the phase (opening/middlegame/endgame), result (win/loss/draw),
 opening name, rating, and moves played.
 
@@ -174,68 +142,42 @@ IMPORTANT: Only reference openings and games explicitly shown above. Do not inve
     return response.choices[0].message.content
 
 
-def ask(question: str) -> str:
+def ask(question: str, username: str) -> str:
     """
-    Modern agentic RAG — routes question to the right tool first.
-    
-    aggregate → CSV stats only (all games from CSV)
-    specific  → vector search only (relevant chunks)
-    hybrid    → both combined
+    Full RAG pipeline for a specific user.
     """
     from router import classify_question, rewrite_query
 
     qdrant, embed_model, groq_client = get_clients()
 
-    # Step 1: Classify the question
     route = classify_question(question, groq_client)
     print(f"Route: {route}")
 
-    stats   = ""
-    context = ""
+    stats       = ""
+    context     = ""
     total_games = 0
 
-    # Step 2: Call the right tool based on route
     if route == ROUTE_AGGREGATE or route == ROUTE_HYBRID:
-        stats = get_aggregate_stats()
-        csv_path = PROCESSED / f"{USERNAME}_games.csv"
+        stats       = get_aggregate_stats(username)
+        csv_path    = PROCESSED / f"{username}_games.csv"
         total_games = len(pd.read_csv(csv_path))
         print("Used: CSV aggregate stats")
 
     if route == ROUTE_SPECIFIC or route == ROUTE_HYBRID:
         search_query = rewrite_query(question, groq_client)
-        chunks  = retrieve_relevant_chunks(search_query, qdrant, embed_model, limit=4)
+        chunks       = retrieve_relevant_chunks(
+            search_query, username, qdrant, embed_model, limit=4
+        )
         context = build_context(chunks)
         print("Used: vector search with rewritten query")
 
-    # Step 3: Build full context
     parts = []
     if stats:
         parts.append(f"=== OVERALL STATISTICS (all {total_games} games) ===\n{stats}")
     if context:
-        parts.append(f"=== SPECIFIC RELEVANT GAMES (examples only — do NOT use opening names from here for statistics) ===\n{context}")
+        parts.append(
+            f"=== SPECIFIC RELEVANT GAMES (examples only — do NOT use opening names from here for statistics) ===\n{context}"
+        )
 
     full_context = "\n\n".join(parts)
-
-    # Step 4: Generate answer
-    answer = ask_groq(question, full_context, groq_client)
-    return answer
-
-
-# ── Run directly to test with real questions ───────────────────────────
-if __name__ == "__main__":
-
-    # These are the questions ChessCoach AI can now answer
-    # about YOUR real games — try changing them!
-    test_questions = [
-        "Why do I keep losing? What is my biggest weakness?",
-        "Which opening should I stop playing based on my results?",
-        "Do I perform better as White or Black and why?",
-    ]
-
-    for question in test_questions:
-        print("=" * 60)
-        print(f"QUESTION: {question}")
-        print("=" * 60)
-        answer = ask(question)
-        print(answer)
-        print()
+    return ask_groq(question, full_context, groq_client, username)
