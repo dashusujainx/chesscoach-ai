@@ -35,7 +35,19 @@ def get_clients():
 
 def get_aggregate_stats(username: str) -> str:
     csv_path = PROCESSED / f"{username}_games.csv"
-    df       = pd.read_csv(csv_path)
+
+    # If CSV missing (Render restarted), regenerate it from Chess.com
+    if not csv_path.exists():
+        print(f"CSV missing for {username} — regenerating...")
+        from fetch_games import fetch_all_games, save_games
+        from parse_pgn import parse_pgn_file
+        pgn_text = fetch_all_games(username, last_n_months=6)
+        pgn_path = save_games(pgn_text, username)
+        df = parse_pgn_file(pgn_path, username)
+        PROCESSED.mkdir(parents=True, exist_ok=True)
+        df.to_csv(csv_path, index=False)
+    else:
+        df = pd.read_csv(csv_path)
 
     total  = len(df)
     wins   = len(df[df["result"] == "win"])
