@@ -12,7 +12,6 @@ from embedder import collection_exists, get_qdrant_client, setup_user
 
 app = FastAPI(title="ChessCoach AI", version="2.0.1")
 
-from fastapi.middleware.cors import CORSMiddleware
 from fastapi import Request
 from fastapi.responses import JSONResponse
 
@@ -20,9 +19,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
     allow_credentials=False,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
-    expose_headers=["*"],
 )
 
 @app.options("/{rest_of_path:path}")
@@ -90,8 +88,38 @@ def check_user(username: str):
     return {"ready": False, "status": "not_setup"}
 
 
-@app.post("/setup/{username}", response_model=SetupResponse)
-def setup_username(username: str):
+setup_results: dict = {}
+
+@app.post("/setup/{username}")
+async def setup_username(username: str, background_tasks: BackgroundTasks):
+    username = username.lower().strip()
+    if not username:
+        raise HTTPException(status_code=400, detail="Username cannot be empty")
+    if username in setup_in_progress:
+        return {"status": "in_progress", "username": username}
+
+    setup_in_progress.add(username)
+    setup_results[username] = {"status": "in_progress"}
+
+    def run_setup():
+        try:
+            result = setup_user(username)
+            setup_results[username] = {"status": "ready", **result}
+        except Exception as e:
+            setup_results[username] = {"status": "error", "detail": str(e)}
+        finally:
+            setup_in_progress.discard(username)
+
+    background_tasks.add_task(run_setup)
+    return {"status": "started", "username": username}
+
+
+@app.get("/setup-status/{username}")
+def setup_status(username: str):
+    username = username.lower().strip()
+    if username in setup_results:
+        return setup_results[username]
+    return {"status": "not_started"}
     """
     Fetches, parses, chunks, and embeds games for a new user.
     This takes ~30-60 seconds depending on game count.
