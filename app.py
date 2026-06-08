@@ -17,7 +17,8 @@ app.add_middleware(
     allow_origins=[
         "http://localhost:3000",
         "https://*.vercel.app",
-        "https://chesscoach-kj0balz2f-dashusujainxs-projects.vercel.app"
+        "https://chesscoach-ai-git-main-dashusujainxs-projects.vercel.app",
+        "https://chesscoach-ai.vercel.app",
     ],
     allow_methods=["*"],
     allow_headers=["*"],
