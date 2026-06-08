@@ -10,7 +10,7 @@ sys.path.append(str(Path(__file__).parent / "src"))
 from retriever import ask
 from embedder import collection_exists, get_qdrant_client, setup_user
 
-app = FastAPI(title="ChessCoach AI", version="2.0.0")
+app = FastAPI(title="ChessCoach AI", version="2.0.1")
 
 app.add_middleware(
     CORSMiddleware,
