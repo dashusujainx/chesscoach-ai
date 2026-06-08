@@ -1,3 +1,6 @@
+# For LOCAL development only
+# Production: backend → Render, frontend → Vercel
+
 services:
   backend:
     build: .
@@ -7,8 +10,7 @@ services:
       - GROQ_API_KEY=${GROQ_API_KEY}
       - QDRANT_URL=${QDRANT_URL}
       - QDRANT_API_KEY=${QDRANT_API_KEY}
-    volumes:
-      - ./data:/app/data
+    # No data volume needed — data lives in Qdrant Cloud
 
   frontend:
     image: node:20-slim

@@ -21,16 +21,17 @@ WORKDIR /app
 # Copy virtual environment from builder
 COPY --from=builder /app/.venv /app/.venv
 
-# Copy application code
+# Copy application code only — NO data/
 COPY app.py .
 COPY src/ ./src/
-COPY data/ ./data/
+
+# Create empty data dirs — filled at runtime per user
+RUN mkdir -p data/raw_pgn data/processed
 
 # Make sure .venv binaries are on PATH
 ENV PATH="/app/.venv/bin:$PATH"
 
 # Pre-download the embedding model at build time
-# so container startup is instant (no download on first request)
 RUN python -c "from fastembed import TextEmbedding; TextEmbedding('BAAI/bge-small-en-v1.5')"
 
 # Expose FastAPI port
