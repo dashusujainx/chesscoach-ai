@@ -14,12 +14,7 @@ app = FastAPI(title="ChessCoach AI", version="2.0.0")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "https://*.vercel.app",
-        "https://chesscoach-ai-git-main-dashusujainxs-projects.vercel.app",
-        "https://chesscoach-ai.vercel.app",
-    ],
+    allow_origins=["*"],
     allow_methods=["*"],
     allow_headers=["*"],
 )
